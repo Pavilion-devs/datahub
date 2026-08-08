@@ -295,9 +295,7 @@ public class PostgresAnalyticsQueries {
     Optional<String> dimSql = dimension.map(d -> mappedField(normalizeFk(d)));
 
     String countExpr =
-        uniqueOn
-            .map(u -> "COUNT(DISTINCT COALESCE(" + mappedField(normalizeFk(u)) + ",''))")
-            .orElse("COUNT(*)");
+        uniqueOn.map(u -> "COUNT(DISTINCT " + mappedField(normalizeFk(u)) + ")").orElse("COUNT(*)");
 
     String sql;
 
@@ -414,9 +412,7 @@ public class PostgresAnalyticsQueries {
     WherePred w = whereUsage(range, filters, mustNot);
 
     String agg =
-        uniqueOn
-            .map(u -> "COUNT(DISTINCT COALESCE(" + mappedField(normalizeFk(u)) + ",''))")
-            .orElse("COUNT(*)");
+        uniqueOn.map(u -> "COUNT(DISTINCT " + mappedField(normalizeFk(u)) + ")").orElse("COUNT(*)");
 
     try {
 
@@ -587,9 +583,7 @@ public class PostgresAnalyticsQueries {
     String gf = mappedField(normalizeFk(groupField));
 
     String agg =
-        uniqueOn
-            .map(u -> "COUNT(DISTINCT COALESCE(" + mappedField(normalizeFk(u)) + ",''))")
-            .orElse("COUNT(*)");
+        uniqueOn.map(u -> "COUNT(DISTINCT " + mappedField(normalizeFk(u)) + ")").orElse("COUNT(*)");
 
     String sql =
         "SELECT "
@@ -653,9 +647,7 @@ public class PostgresAnalyticsQueries {
     WherePred w = whereUsage(range, filters, mustNot);
 
     String agg =
-        uniqueOn
-            .map(u -> "COUNT(DISTINCT COALESCE(" + mappedField(normalizeFk(u)) + ",''))")
-            .orElse("COUNT(*)");
+        uniqueOn.map(u -> "COUNT(DISTINCT " + mappedField(normalizeFk(u)) + ")").orElse("COUNT(*)");
 
     String sql = "SELECT " + agg + " FROM " + tbl() + " WHERE " + w.predicate;
 
@@ -678,8 +670,9 @@ public class PostgresAnalyticsQueries {
   }
 
   private boolean canUseRollups(DateInterval granularity, DateRange dateRange) {
+    // WEEK/YEAR need rebucketed points; use raw until rollup aggregation matches.
     return switch (granularity) {
-      case HOUR, DAY, WEEK, MONTH, YEAR -> true;
+      case HOUR, DAY, MONTH -> isRangeAlignedToGrain(dateRange, rollupGrain(granularity));
       default -> false;
     };
   }
@@ -691,6 +684,28 @@ public class PostgresAnalyticsQueries {
       case MONTH, YEAR -> AnalyticsMetricFamilies.GRAIN_MONTH;
       default -> AnalyticsMetricFamilies.GRAIN_HOUR;
     };
+  }
+
+  private boolean isRangeAlignedToGrain(DateRange dateRange, String grain) {
+    try {
+      Instant start = Instant.ofEpochMilli(Long.parseLong(dateRange.getStart()));
+      Instant end = Instant.ofEpochMilli(Long.parseLong(dateRange.getEnd()));
+      if (AnalyticsMetricFamilies.GRAIN_HOUR.equals(grain)) {
+        return start.equals(PostgresAnalyticsUtc.truncateToUtcHour(start))
+            && end.equals(PostgresAnalyticsUtc.truncateToUtcHour(end));
+      }
+      if (AnalyticsMetricFamilies.GRAIN_DAY.equals(grain)) {
+        return start.equals(PostgresAnalyticsUtc.truncateToUtcDay(start))
+            && end.equals(PostgresAnalyticsUtc.truncateToUtcDay(end));
+      }
+      if (AnalyticsMetricFamilies.GRAIN_MONTH.equals(grain)) {
+        return start.equals(PostgresAnalyticsUtc.truncateToUtcMonth(start))
+            && end.equals(PostgresAnalyticsUtc.truncateToUtcMonth(end));
+      }
+      return false;
+    } catch (Exception e) {
+      return false;
+    }
   }
 
   private boolean isRangeSealed(DateRange dateRange, String grain) {
@@ -746,6 +761,10 @@ public class PostgresAnalyticsQueries {
       Map<String, List<String>> mustNotFilters,
       Optional<String> uniqueOn) {
     if (uniqueOn.isPresent()) {
+      return null;
+    }
+    // Hourly materialization only persists event_type group dims; other dimensions need raw.
+    if (dimension.isPresent() && !"event_type".equals(normalizeFk(dimension.get()))) {
       return null;
     }
     String grain = rollupGrain(granularity);

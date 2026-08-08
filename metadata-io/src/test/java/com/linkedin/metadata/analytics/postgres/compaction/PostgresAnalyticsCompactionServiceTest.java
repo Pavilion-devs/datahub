@@ -2,6 +2,8 @@ package com.linkedin.metadata.analytics.postgres.compaction;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -84,5 +86,6 @@ public class PostgresAnalyticsCompactionServiceTest {
     assertTrue(result.isMoreWorkRemaining());
     assertEquals(result.getImplementation(), "pgAnalytics");
     verify(compactor, org.mockito.Mockito.never()).compact(any());
+    verify(timeoutStmt, atLeastOnce()).execute(contains("statement_timeout TO DEFAULT"));
   }
 }

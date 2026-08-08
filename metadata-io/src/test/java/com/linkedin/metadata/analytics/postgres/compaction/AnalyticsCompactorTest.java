@@ -18,6 +18,7 @@ import com.linkedin.metadata.analytics.postgres.PostgresAnalyticsStore;
 import com.linkedin.metadata.config.postgres.PgAnalyticsStoreOptions;
 import io.ebean.Database;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import org.testng.annotations.BeforeMethod;
@@ -85,7 +86,9 @@ public class AnalyticsCompactorTest {
 
   @Test
   public void compact_skipsAlreadySealedHours() throws Exception {
+    Instant latestSealed = Instant.now().truncatedTo(ChronoUnit.HOURS).minus(2, ChronoUnit.HOURS);
     when(store.getSealedThrough(anyString(), anyString(), anyString())).thenReturn(Instant.EPOCH);
+    when(store.getLatestSealedHourStart(anyString())).thenReturn(latestSealed);
     when(store.isDayFullySealed(anyString(), any())).thenReturn(false);
 
     AnalyticsCompactionResult result =
@@ -100,5 +103,35 @@ public class AnalyticsCompactorTest {
     assertEquals(result.getHoursSealed(), 0);
     assertFalse(result.isMoreWorkRemaining());
     verify(store, never()).materializeDatahubUsageHourlyFromRaw(any(Instant.class));
+  }
+
+  @Test
+  public void compact_resealsHourWhenOnlyUsageFamilyWatermarked() throws Exception {
+    when(store.getLatestSealedHourStart(anyString())).thenReturn(null);
+    when(store.isDayFullySealed(anyString(), any())).thenReturn(false);
+    when(store.getSealedThrough(anyString(), anyString(), anyString()))
+        .thenAnswer(
+            invocation -> {
+              String family = invocation.getArgument(1);
+              if ("datahub_usage".equals(family)) {
+                return Instant.EPOCH;
+              }
+              return null;
+            });
+
+    AnalyticsCompactionResult result =
+        compactor.compact(
+            AnalyticsCompactionRequest.builder()
+                .maxHoursToSeal(1)
+                .maxDaysToCompact(0)
+                .maxMonthsToCompact(0)
+                .maxWallClockMillis(60_000L)
+                .build());
+
+    assertEquals(result.getHoursSealed(), 1);
+    assertTrue(result.isMoreWorkRemaining());
+    // Usage already sealed — rematerialize skipped; remaining family watermarks written.
+    verify(store, never()).materializeDatahubUsageHourlyFromRaw(any(Instant.class));
+    verify(store, times(2)).upsertWatermark(anyString(), anyString(), anyString(), any());
   }
 }
